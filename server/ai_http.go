@@ -41,6 +41,7 @@ func startAIServer(lp lphttp) error {
 	lp.transRPC.Handle("/image-to-image", oapiReqValidator(lp.ImageToImage()))
 	lp.transRPC.Handle("/image-to-video", oapiReqValidator(lp.ImageToVideo()))
 	lp.transRPC.Handle("/text-to-video", oapiReqValidator(lp.TextToVideo()))
+	lp.transRPC.Handle("/video-to-video", oapiReqValidator(lp.VideoToVideo()))
 
 	return nil
 }
@@ -118,6 +119,29 @@ func (h *lphttp) TextToVideo() http.Handler {
 		var req worker.TextToVideoJSONRequestBody
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			respondWithError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		handleAIRequest(ctx, w, r, orch, req)
+	})
+}
+
+func (h *lphttp) VideoToVideo() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orch := h.orchestrator
+
+		remoteAddr := getRemoteAddr(r)
+		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
+
+		multiRdr, err := r.MultipartReader()
+		if err != nil {
+			respondWithError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var req worker.VideoToVideoMultipartRequestBody
+		if err := runtime.BindMultipart(&req, *multiRdr); err != nil {
+			respondWithError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -206,6 +230,26 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 		modelID = *v.ModelId
 		submitFn = func(ctx context.Context) (*worker.ImageResponse, error) {
 			return orch.TextToVideo(ctx, v)
+		}
+
+		// TODO: The orchestrator should require the broadcaster to always specify a height and width
+		height := int64(576)
+		if v.Height != nil {
+			height = int64(*v.Height)
+		}
+		width := int64(1024)
+		if v.Width != nil {
+			width = int64(*v.Width)
+		}
+		// The # of frames outputted by stable-video-diffusion-img2vid-xt models
+		frames := int64(25)
+
+		outPixels = height * width * int64(frames)
+	case worker.VideoToVideoMultipartRequestBody:
+		cap = core.Capability_VideoToVideo
+		modelID = *v.ModelId
+		submitFn = func(ctx context.Context) (*worker.ImageResponse, error) {
+			return orch.VideoToVideo(ctx, v)
 		}
 
 		// TODO: The orchestrator should require the broadcaster to always specify a height and width

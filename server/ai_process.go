@@ -26,6 +26,7 @@ const defaultTextToImageModelID = "stabilityai/sdxl-turbo"
 const defaultImageToImageModelID = "stabilityai/sdxl-turbo"
 const defaultImageToVideoModelID = "stabilityai/stable-video-diffusion-img2vid-xt"
 const defaultTextToVideoModelID = "ByteDance/AnimateDiff-Lightning"
+const defaultVideoToVideoModelID = "ByteDance/AnimateDiff"
 
 type ServiceUnavailableError struct {
 	err error
@@ -346,6 +347,94 @@ func submitTextToVideo(ctx context.Context, params aiRequestParams, sess *AISess
 	return &res, nil
 }
 
+func processVideoToVideo(ctx context.Context, params aiRequestParams, req worker.VideoToVideoMultipartRequestBody) (*worker.ImageResponse, error) {
+	resp, err := processAIRequest(ctx, params, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// HACK: Re-use worker.ImageResponse to return results
+	videos := make([]worker.Media, len(resp.Images))
+	for i, media := range resp.Images {
+		data, err := downloadSeg(ctx, media.Url)
+		if err != nil {
+			return nil, err
+		}
+
+		name := filepath.Base(media.Url)
+		newUrl, err := params.os.SaveData(ctx, name, bytes.NewReader(data), nil, 0)
+		if err != nil {
+			return nil, err
+		}
+
+		videos[i] = worker.Media{
+			Url:  newUrl,
+			Seed: media.Seed,
+		}
+	}
+
+	resp.Images = videos
+
+	return resp, nil
+}
+
+func submitVideoToVideo(ctx context.Context, params aiRequestParams, sess *AISession, req worker.VideoToVideoMultipartRequestBody) (*worker.ImageResponse, error) {
+	var buf bytes.Buffer
+	mw, err := worker.NewVideoToVideoMultipartWriter(&buf, req)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := worker.NewClientWithResponses(sess.Transcoder(), worker.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Height == nil {
+		req.Height = new(int)
+		*req.Height = 576
+	}
+	if req.Width == nil {
+		req.Width = new(int)
+		*req.Width = 1024
+	}
+	frames := int64(25)
+
+	outPixels := int64(*req.Height) * int64(*req.Width) * frames
+	setHeaders, balUpdate, err := prepareAIPayment(ctx, sess, outPixels)
+	if err != nil {
+		return nil, err
+	}
+	defer completeBalanceUpdate(sess.BroadcastSession, balUpdate)
+
+	resp, err := client.VideoToVideoWithBody(ctx, mw.FormDataContentType(), &buf, setHeaders)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, errors.New(string(data))
+	}
+
+	// We treat a response as "receiving change" where the change is the difference between the credit and debit for the update
+	if balUpdate != nil {
+		balUpdate.Status = ReceivedChange
+	}
+
+	var res worker.ImageResponse
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
+	}
+
+	return &res, nil
+}
+
 func processAIRequest(ctx context.Context, params aiRequestParams, req interface{}) (*worker.ImageResponse, error) {
 	var cap core.Capability
 	var modelID string
@@ -387,6 +476,15 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 		}
 		submitFn = func(ctx context.Context, params aiRequestParams, sess *AISession) (*worker.ImageResponse, error) {
 			return submitTextToVideo(ctx, params, sess, v)
+		}
+	case worker.VideoToVideoMultipartRequestBody:
+		cap = core.Capability_VideoToVideo
+		modelID = defaultVideoToVideoModelID
+		if v.ModelId != nil {
+			modelID = *v.ModelId
+		}
+		submitFn = func(ctx context.Context, params aiRequestParams, sess *AISession) (*worker.ImageResponse, error) {
+			return submitVideoToVideo(ctx, params, sess, v)
 		}
 	default:
 		return nil, errors.New("unknown AI request type")

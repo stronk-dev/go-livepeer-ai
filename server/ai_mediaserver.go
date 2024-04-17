@@ -69,6 +69,8 @@ func startAIMediaServer(ls *LivepeerServer) error {
 	ls.HTTPMux.Handle("/image-to-video/result", ls.VideoResult())
 	ls.HTTPMux.Handle("/text-to-video", oapiReqValidator(ls.TextToVideo()))
 	ls.HTTPMux.Handle("/text-to-video/result", ls.VideoResult())
+	ls.HTTPMux.Handle("/video-to-video", oapiReqValidator(ls.VideoToVideo()))
+	ls.HTTPMux.Handle("/video-to-video/result", ls.VideoResult())
 
 	return nil
 }
@@ -365,6 +367,116 @@ func (ls *LivepeerServer) TextToVideo() http.Handler {
 			}
 
 			clog.Infof(ctx, "Saved TextToVideo result path=%v", path)
+		}(cctx)
+
+		resp := &VideoResponseAsync{
+			RequestID: requestID,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+}
+
+func (ls *LivepeerServer) VideoToVideo() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteAddr := getRemoteAddr(r)
+		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
+		requestID := string(core.RandomManifestID())
+		ctx = clog.AddVal(ctx, "request_id", requestID)
+
+		multiRdr, err := r.MultipartReader()
+		if err != nil {
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+
+		var req worker.VideoToVideoMultipartRequestBody
+		if err := runtime.BindMultipart(&req, *multiRdr); err != nil {
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+
+		var async bool
+		prefer := r.Header.Get("Prefer")
+		if prefer == "respond-async" {
+			async = true
+		}
+
+		clog.V(common.VERBOSE).Infof(ctx, "Received VideoToVideo request videoSize=%v model_id=%v async=%v", req.Video.FileSize(), *req.ModelId, async)
+
+		params := aiRequestParams{
+			node:        ls.LivepeerNode,
+			os:          drivers.NodeStorage.NewSession(requestID),
+			sessManager: ls.AISessionManager,
+		}
+
+		if !async {
+			start := time.Now()
+
+			resp, err := processVideoToVideo(ctx, params, req)
+			if err != nil {
+				var e *ServiceUnavailableError
+				if errors.As(err, &e) {
+					respondJsonError(ctx, w, err, http.StatusServiceUnavailable)
+					return
+				}
+
+				respondJsonError(ctx, w, err, http.StatusInternalServerError)
+				return
+			}
+
+			took := time.Since(start)
+			clog.Infof(ctx, "Processed VideoToVideo request videoSize=%v model_id=%v took=%v", req.Video.FileSize(), *req.ModelId, took)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		var data bytes.Buffer
+		if err := json.NewEncoder(&data).Encode(req); err != nil {
+			respondJsonError(ctx, w, err, http.StatusInternalServerError)
+			return
+		}
+
+		path, err := params.os.SaveData(ctx, "request.json", bytes.NewReader(data.Bytes()), nil, 0)
+		if err != nil {
+			respondJsonError(ctx, w, err, http.StatusInternalServerError)
+			return
+		}
+
+		clog.Infof(ctx, "Saved VideoToVideo request path=%v", requestID, path)
+
+		cctx := clog.Clone(context.Background(), ctx)
+		go func(ctx context.Context) {
+			start := time.Now()
+
+			var data bytes.Buffer
+			resp, err := processVideoToVideo(ctx, params, req)
+			if err != nil {
+				clog.Errorf(ctx, "Error processing VideoToVideo request err=%v", err)
+
+				handleAPIError(ctx, &data, err, http.StatusInternalServerError)
+			} else {
+				took := time.Since(start)
+				clog.Infof(ctx, "Processed VideoToVideo request videoSize=%v model_id=%v took=%v", req.Video.FileSize(), *req.ModelId, took)
+
+				if err := json.NewEncoder(&data).Encode(resp); err != nil {
+					clog.Errorf(ctx, "Error JSON encoding VideoToVideo response err=%v", err)
+					return
+				}
+			}
+
+			path, err := params.os.SaveData(ctx, "result.json", bytes.NewReader(data.Bytes()), nil, 0)
+			if err != nil {
+				clog.Errorf(ctx, "Error saving VideoToVideo result to object store err=%v", err)
+				return
+			}
+
+			clog.Infof(ctx, "Saved VideoToVideo result path=%v", path)
 		}(cctx)
 
 		resp := &VideoResponseAsync{
