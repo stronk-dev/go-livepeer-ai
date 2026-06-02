@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 echo 'WARNING: downloading and executing lpms/install_ffmpeg.sh, use it directly in case of issues'
-curl https://raw.githubusercontent.com/livepeer/lpms/5fe66b1044f876b47248c36aed581622fbbe093d/install_ffmpeg.sh | bash -s $1
+curl https://raw.githubusercontent.com/stronk-dev/lpms/fab71cd80b2b925296a92c2ad983ebefdcc82958/install_ffmpeg.sh | bash -s $1

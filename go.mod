@@ -19,7 +19,7 @@ require (
 	github.com/jaypipes/pcidb v1.0.0
 	github.com/livepeer/go-tools v0.3.6-0.20240130205227-92479de8531b
 	github.com/livepeer/livepeer-data v0.7.5-0.20231004073737-06f1f383fb18
-	github.com/livepeer/lpms v0.0.0-20260310011836-c44af7253bc9
+	github.com/livepeer/lpms v0.0.0-20260402001906-5fe66b1044f8
 	github.com/livepeer/m3u8 v0.11.1
 	github.com/mattn/go-sqlite3 v1.14.18
 	github.com/oapi-codegen/nethttp-middleware v1.0.1
@@ -281,3 +281,5 @@ require (
 	lukechampine.com/blake3 v1.2.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
+
+replace github.com/livepeer/lpms => github.com/stronk-dev/lpms v0.0.0-20260602151826-fab71cd80b2b
